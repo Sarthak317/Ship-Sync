@@ -1,6 +1,6 @@
 // Email Service - Calls backend to send emails
 
-const API_URL = 'https://ship-sync-production.up.railway.app/';
+const API_URL = 'https://ship-sync-backend-f0a6.onrender.com';
 
 // Send approval email
 export const sendApprovalEmail = async (userEmail, shipment) => {
