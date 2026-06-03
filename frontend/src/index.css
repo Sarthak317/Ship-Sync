@@ -320,3 +320,33 @@ html.light .glass {
 .holo-card:hover {
   filter: drop-shadow(0 0 20px rgba(168, 85, 247, 0.4));
 }
+
+/* Leaflet Map Styling & Dark Mode Inversion Filter */
+.leaflet-container {
+  font-family: inherit;
+  border-radius: 1rem;
+}
+
+/* Premium Dark Mode Map Tile Filter (OSM Dark Theme Inversion) */
+html.dark .dark-map .leaflet-tile-container {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
+
+html.dark .dark-map .leaflet-container {
+  background: #0f172a !important;
+}
+
+html.dark .dark-map .leaflet-bar a {
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+  border-bottom: 1px solid #334155 !important;
+}
+
+html.dark .dark-map .leaflet-bar a:hover {
+  background-color: #334155 !important;
+}
+
+html.dark .dark-map .leaflet-control-attribution {
+  background-color: rgba(15, 23, 42, 0.8) !important;
+  color: #94a3b8 !important;
+}
