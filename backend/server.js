@@ -1,31 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const PDFDocument = require('pdfkit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-
-// Initialize Nodemailer transporter with Gmail SMTP
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
-
-// Verify transporter connection configuration
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Nodemailer transporter verification failed:', error);
-  } else {
-    console.log('📧 Nodemailer is ready to take messages');
-  }
-});
 
 // Initialize Firebase Admin (will be configured with service account)
 // For now, we'll use the frontend Firebase config approach
@@ -37,7 +18,7 @@ if (process.env.FIREBASE_PROJECT_ID) {
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/^"|"$/g, '').replace(/\\n/g, '\n')
     })
   });
   db = admin.firestore();
@@ -47,6 +28,51 @@ if (process.env.FIREBASE_PROJECT_ID) {
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Helper function to send email via Brevo REST API (Uses port 443, not blocked by Render)
+const sendEmailViaBrevo = async (to, subject, htmlContent, pdfBuffer, pdfFilename) => {
+  const apiKey = process.env.BREVO_API_KEY;
+  if (!apiKey) throw new Error("Brevo API key is not set");
+
+  const payload = {
+    sender: {
+      name: "ShipSync",
+      email: process.env.EMAIL_USER || "sarthakm317@gmail.com"
+    },
+    to: [
+      {
+        email: to
+      }
+    ],
+    subject: subject,
+    htmlContent: htmlContent
+  };
+
+  if (pdfBuffer) {
+    payload.attachment = [
+      {
+        name: pdfFilename || "invoice.pdf",
+        content: pdfBuffer.toString("base64")
+      }
+    ];
+  }
+
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "accept": "application/json",
+      "api-key": apiKey,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to send email via Brevo");
+  }
+  return data;
+};
 
 // Warehouse Configuration
 const WAREHOUSE = {
@@ -402,20 +428,28 @@ app.post('/api/email/approval', async (req, res) => {
   try {
     const { to, shipment } = req.body;
     
+// Send Approval Email
+app.post('/api/email/approval', async (req, res) => {
+  try {
+    const { to, shipment } = req.body;
+    
     if (!to || !shipment) {
       return res.status(400).json({ error: 'Missing required fields: to, shipment' });
     }
 
-    const mailOptions = {
-      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
-      to: to,
-      subject: `✅ Shipment Approved - ${shipment.trackingNumber} | ShipSync`,
-      html: getApprovalEmailHTML(shipment)
-    };
+    if (!process.env.BREVO_API_KEY) {
+      console.error('❌ Brevo API Key is missing.');
+      return res.status(500).json({ error: 'Brevo API key is not configured' });
+    }
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Approval email sent to:', to, info.messageId);
-    res.json({ success: true, messageId: info.messageId });
+    console.log(`📨 Sending approval email to customer (${to}) via Brevo API...`);
+    const data = await sendEmailViaBrevo(
+      to, 
+      `✅ Shipment Approved - ${shipment.trackingNumber} | ShipSync`, 
+      getApprovalEmailHTML(shipment)
+    );
+    console.log('✅ Approval email sent successfully via Brevo!');
+    res.json({ success: true, method: 'brevo', data });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -431,16 +465,24 @@ app.post('/api/email/rejection', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: to, shipment, reason' });
     }
 
-    const mailOptions = {
-      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
-      to: to,
-      subject: `⚠️ Shipment Rejected - ${shipment.trackingNumber} | Action Required`,
-      html: getRejectionEmailHTML(shipment, reason)
-    };
+    if (!process.env.BREVO_API_KEY) {
+      console.error('❌ Brevo API Key is missing.');
+      return res.status(500).json({ error: 'Brevo API key is not configured' });
+    }
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('📧 Rejection email sent to:', to, info.messageId);
-    res.json({ success: true, messageId: info.messageId });
+    console.log(`📨 Sending rejection email to customer (${to}) via Brevo API...`);
+    const data = await sendEmailViaBrevo(
+      to, 
+      `⚠️ Shipment Rejected - ${shipment.trackingNumber} | Action Required`, 
+      getRejectionEmailHTML(shipment, reason)
+    );
+    console.log('📧 Rejection email sent successfully via Brevo!');
+    res.json({ success: true, method: 'brevo', data });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -757,24 +799,24 @@ app.post('/api/email/delivery', async (req, res) => {
     // Generate PDF invoice
     console.log('📄 Generating invoice PDF...');
     const pdfBuffer = await generateInvoicePDF(shipment);
+    const pdfBase64 = pdfBuffer.toString('base64');
     console.log('✅ PDF generated successfully');
 
-    const mailOptions = {
-      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
-      to: to,
-      subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
-      html: getDeliveryEmailHTML(shipment),
-      attachments: [
-        {
-          filename: `ShipSync-Invoice-${shipment.trackingNumber}.pdf`,
-          content: pdfBuffer
-        }
-      ]
-    };
+    if (!process.env.BREVO_API_KEY) {
+      console.error('❌ Brevo API Key is missing.');
+      return res.status(500).json({ error: 'Brevo API key is not configured' });
+    }
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('📦 Delivery email with invoice sent to:', to, info.messageId);
-    res.json({ success: true, messageId: info.messageId });
+    console.log(`📨 Sending delivery email to customer (${to}) via Brevo API...`);
+    const data = await sendEmailViaBrevo(
+      to, 
+      `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`, 
+      getDeliveryEmailHTML(shipment),
+      pdfBuffer,
+      `ShipSync-Invoice-${shipment.trackingNumber}.pdf`
+    );
+    console.log('📦 Delivery email with invoice sent successfully via Brevo!');
+    res.json({ success: true, method: 'brevo', data });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -805,14 +847,25 @@ app.post('/api/shipment/update-status', async (req, res) => {
 
     // Send delivery email if status is "Delivered"
     if (newStatus === 'Delivered' && sendEmail && userEmail && shipment) {
-      const mailOptions = {
-        from: `"ShipSync" <${process.env.EMAIL_USER}>`,
-        to: userEmail,
-        subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
-        html: getDeliveryEmailHTML(shipment)
-      };
-      await transporter.sendMail(mailOptions);
-      console.log('📦 Delivery email sent for manual status update');
+      let emailSent = false;
+      if (process.env.BREVO_API_KEY) {
+        try {
+          console.log(`📨 Sending manual delivery email to customer (${userEmail}) via Brevo API...`);
+          await sendEmailViaBrevo(
+            userEmail, 
+            `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`, 
+            getDeliveryEmailHTML(shipment)
+          );
+          console.log('📦 Manual delivery email sent successfully via Brevo!');
+          emailSent = true;
+        } catch (brevoError) {
+          console.error('❌ Brevo manual delivery sending failed, trying fallback:', brevoError.message);
+        }
+      }
+
+      if (!emailSent) {
+        console.error('❌ Brevo manual delivery email sending failed or was not configured.');
+      }
     }
 
     console.log(`✅ Status updated: ${shipmentId} -> ${newStatus}`);
@@ -930,22 +983,29 @@ cron.schedule('* * * * *', async () => {
           // Send delivery email with PDF if delivered
           if (scheduled.status === 'Delivered' && shipment.userEmail) {
             const pdfBuffer = await generateInvoicePDF(shipment);
+            const pdfBase64 = pdfBuffer.toString('base64');
             
-            const mailOptions = {
-              from: `"ShipSync" <${process.env.EMAIL_USER}>`,
-              to: shipment.userEmail,
-              subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
-              html: getDeliveryEmailHTML(shipment),
-              attachments: [
-                {
-                  filename: `ShipSync-Invoice-${shipment.trackingNumber}.pdf`,
-                  content: pdfBuffer
-                }
-              ]
-            };
-            
-            await transporter.sendMail(mailOptions);
-            console.log(`📦 Auto delivery email with invoice sent to: ${shipment.userEmail}`);
+            let emailSent = false;
+            if (process.env.BREVO_API_KEY) {
+              try {
+                console.log(`⏰ Sending auto delivery email to customer (${shipment.userEmail}) via Brevo API...`);
+                await sendEmailViaBrevo(
+                  shipment.userEmail, 
+                  `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`, 
+                  getDeliveryEmailHTML(shipment),
+                  pdfBuffer,
+                  `ShipSync-Invoice-${shipment.trackingNumber}.pdf`
+                );
+                console.log(`📦 Auto delivery email with invoice sent successfully via Brevo to: ${shipment.userEmail}`);
+                emailSent = true;
+              } catch (brevoError) {
+                console.error('❌ Brevo auto delivery sending failed, trying fallback:', brevoError.message);
+              }
+            }
+
+            if (!emailSent) {
+              console.error('❌ Brevo auto delivery email sending failed or was not configured.');
+            }
           }
           
           break; // Only update one status at a time
