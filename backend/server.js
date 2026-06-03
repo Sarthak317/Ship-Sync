@@ -424,10 +424,6 @@ app.get('/', (req, res) => {
 });
 
 // Send Approval Email
-app.post('/api/email/approval', async (req, res) => {
-  try {
-    const { to, shipment } = req.body;
-    
 // Send Approval Email
 app.post('/api/email/approval', async (req, res) => {
   try {
@@ -478,11 +474,6 @@ app.post('/api/email/rejection', async (req, res) => {
     );
     console.log('📧 Rejection email sent successfully via Brevo!');
     res.json({ success: true, method: 'brevo', data });
-  } catch (error) {
-    console.error('Server error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
