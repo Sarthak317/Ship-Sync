@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const PDFDocument = require('pdfkit');
@@ -9,8 +9,23 @@ const PDFDocument = require('pdfkit');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Resend with API key
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Nodemailer transporter with Gmail SMTP
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// Verify transporter connection configuration
+transporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ Nodemailer transporter verification failed:', error);
+  } else {
+    console.log('📧 Nodemailer is ready to take messages');
+  }
+});
 
 // Initialize Firebase Admin (will be configured with service account)
 // For now, we'll use the frontend Firebase config approach
@@ -391,20 +406,16 @@ app.post('/api/email/approval', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: to, shipment' });
     }
 
-    const { data, error } = await resend.emails.send({
-      from: 'ShipSync <onboarding@resend.dev>',
-      to: [to],
+    const mailOptions = {
+      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
+      to: to,
       subject: `✅ Shipment Approved - ${shipment.trackingNumber} | ShipSync`,
       html: getApprovalEmailHTML(shipment)
-    });
+    };
 
-    if (error) {
-      console.error('Resend error:', error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    console.log('✅ Approval email sent to:', to);
-    res.json({ success: true, data });
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Approval email sent to:', to, info.messageId);
+    res.json({ success: true, messageId: info.messageId });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -420,20 +431,16 @@ app.post('/api/email/rejection', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: to, shipment, reason' });
     }
 
-    const { data, error } = await resend.emails.send({
-      from: 'ShipSync <onboarding@resend.dev>',
-      to: [to],
+    const mailOptions = {
+      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
+      to: to,
       subject: `⚠️ Shipment Rejected - ${shipment.trackingNumber} | Action Required`,
       html: getRejectionEmailHTML(shipment, reason)
-    });
+    };
 
-    if (error) {
-      console.error('Resend error:', error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    console.log('📧 Rejection email sent to:', to);
-    res.json({ success: true, data });
+    const info = await transporter.sendMail(mailOptions);
+    console.log('📧 Rejection email sent to:', to, info.messageId);
+    res.json({ success: true, messageId: info.messageId });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -750,29 +757,24 @@ app.post('/api/email/delivery', async (req, res) => {
     // Generate PDF invoice
     console.log('📄 Generating invoice PDF...');
     const pdfBuffer = await generateInvoicePDF(shipment);
-    const pdfBase64 = pdfBuffer.toString('base64');
     console.log('✅ PDF generated successfully');
 
-    const { data, error } = await resend.emails.send({
-      from: 'ShipSync <onboarding@resend.dev>',
-      to: [to],
+    const mailOptions = {
+      from: `"ShipSync" <${process.env.EMAIL_USER}>`,
+      to: to,
       subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
       html: getDeliveryEmailHTML(shipment),
       attachments: [
         {
           filename: `ShipSync-Invoice-${shipment.trackingNumber}.pdf`,
-          content: pdfBase64
+          content: pdfBuffer
         }
       ]
-    });
+    };
 
-    if (error) {
-      console.error('Resend error:', error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    console.log('📦 Delivery email with invoice sent to:', to);
-    res.json({ success: true, data });
+    const info = await transporter.sendMail(mailOptions);
+    console.log('📦 Delivery email with invoice sent to:', to, info.messageId);
+    res.json({ success: true, messageId: info.messageId });
   } catch (error) {
     console.error('Server error:', error);
     res.status(500).json({ error: error.message });
@@ -803,12 +805,13 @@ app.post('/api/shipment/update-status', async (req, res) => {
 
     // Send delivery email if status is "Delivered"
     if (newStatus === 'Delivered' && sendEmail && userEmail && shipment) {
-      await resend.emails.send({
-        from: 'ShipSync <onboarding@resend.dev>',
-        to: [userEmail],
+      const mailOptions = {
+        from: `"ShipSync" <${process.env.EMAIL_USER}>`,
+        to: userEmail,
         subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
         html: getDeliveryEmailHTML(shipment)
-      });
+      };
+      await transporter.sendMail(mailOptions);
       console.log('📦 Delivery email sent for manual status update');
     }
 
@@ -927,20 +930,21 @@ cron.schedule('* * * * *', async () => {
           // Send delivery email with PDF if delivered
           if (scheduled.status === 'Delivered' && shipment.userEmail) {
             const pdfBuffer = await generateInvoicePDF(shipment);
-            const pdfBase64 = pdfBuffer.toString('base64');
             
-            await resend.emails.send({
-              from: 'ShipSync <onboarding@resend.dev>',
-              to: [shipment.userEmail],
+            const mailOptions = {
+              from: `"ShipSync" <${process.env.EMAIL_USER}>`,
+              to: shipment.userEmail,
               subject: `🎉 Shipment Delivered - ${shipment.trackingNumber} | ShipSync`,
               html: getDeliveryEmailHTML(shipment),
               attachments: [
                 {
                   filename: `ShipSync-Invoice-${shipment.trackingNumber}.pdf`,
-                  content: pdfBase64
+                  content: pdfBuffer
                 }
               ]
-            });
+            };
+            
+            await transporter.sendMail(mailOptions);
             console.log(`📦 Auto delivery email with invoice sent to: ${shipment.userEmail}`);
           }
           
