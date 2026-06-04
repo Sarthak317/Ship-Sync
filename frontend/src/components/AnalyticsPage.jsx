@@ -6,6 +6,7 @@ import { useTheme } from '../context/ThemeContext';
 const AnalyticsPage = ({ shipments, onBack }) => {
   const { isDark } = useTheme();
   const [timeRange, setTimeRange] = useState(30); // 7, 30, or 90 days
+  const [hoveredIndex, setHoveredIndex] = useState(null);
 
   // Filter shipments by time range
   const filteredShipments = useMemo(() => {
@@ -94,7 +95,7 @@ const AnalyticsPage = ({ shipments, onBack }) => {
     };
   }, [filteredShipments, shipments, timeRange]);
 
-  // Status breakdown
+  // Status breakdown (groups 6 statuses into 3 aggregated status levels for high-level overview)
   const statusBreakdown = useMemo(() => {
     const statusMap = {
       'Pending': 0,
@@ -103,8 +104,13 @@ const AnalyticsPage = ({ shipments, onBack }) => {
     };
     
     filteredShipments.forEach(shipment => {
-      if (statusMap.hasOwnProperty(shipment.status)) {
-        statusMap[shipment.status]++;
+      const status = shipment.status;
+      if (status === 'Pending Approval' || status === 'Approved' || status === 'Pending') {
+        statusMap['Pending']++;
+      } else if (status === 'In Transit' || status === 'Dispatched' || status === 'Out for Delivery') {
+        statusMap['In Transit']++;
+      } else if (status === 'Delivered') {
+        statusMap['Delivered']++;
       }
     });
 
@@ -113,7 +119,7 @@ const AnalyticsPage = ({ shipments, onBack }) => {
       count: statusMap[status],
       percentage: filteredShipments.length > 0 
         ? ((statusMap[status] / filteredShipments.length) * 100).toFixed(1)
-        : 0
+        : '0.0'
     }));
   }, [filteredShipments]);
 
@@ -122,6 +128,24 @@ const AnalyticsPage = ({ shipments, onBack }) => {
     'In Transit': '#06b6d4',
     'Delivered': '#10b981'
   };
+
+  const radius = 45;
+  const circumference = 2 * Math.PI * radius; // ~282.743
+
+  const segments = useMemo(() => {
+    let accumulatedPercentage = 0;
+    return statusBreakdown.map(status => {
+      const percentage = parseFloat(status.percentage);
+      const strokeDashoffset = circumference - (percentage / 100) * circumference;
+      const rotation = (accumulatedPercentage / 100) * 360;
+      accumulatedPercentage += percentage;
+      return {
+        ...status,
+        strokeDashoffset,
+        rotation
+      };
+    });
+  }, [statusBreakdown, circumference]);
 
   const maxShipments = Math.max(...shipmentsOverTime.map(d => d.shipments), 1);
 
@@ -299,30 +323,139 @@ const AnalyticsPage = ({ shipments, onBack }) => {
             )}
           </div>
 
-          {/* Status Breakdown */}
+          {/* Status Overview Card with Donut Chart */}
           <div className={`backdrop-blur-sm rounded-2xl p-6 shadow-2xl animate-fade-in-up transition-colors duration-300 ${isDark ? 'bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-slate-700/50' : 'bg-white/80 border border-slate-200'}`} style={{animationDelay: '0.5s'}}>
             <div className="flex items-center gap-2 mb-6">
               <Package className="w-5 h-5 text-purple-500" />
               <h3 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-800'}`}>Status Overview</h3>
             </div>
-            <div className="grid grid-cols-3 gap-4">
-              {statusBreakdown.map((status, index) => (
-                <div 
-                  key={index}
-                  className={`rounded-xl p-4 border hover:shadow-lg transition-all duration-200 group ${isDark ? 'bg-slate-700/30 border-slate-600/50' : 'bg-slate-50 border-slate-200'}`}
-                  style={{ borderColor: `${COLORS[status.name]}40` }}
-                >
-                  <div 
-                    className="w-3 h-3 rounded-full mb-3"
-                    style={{ backgroundColor: COLORS[status.name] }}
-                  ></div>
-                  <p className={`text-xs mb-2 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{status.name}</p>
-                  <p className={`text-2xl font-bold mb-1 ${isDark ? 'text-white' : 'text-slate-800'}`}>{status.count}</p>
-                  <p className="text-sm font-semibold" style={{ color: COLORS[status.name] }}>
-                    {status.percentage}%
-                  </p>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+              {/* Left Column: Interactive SVG Donut Chart */}
+              <div className="relative flex justify-center items-center h-48">
+                {/* SVG for Donut Chart */}
+                <svg width="180" height="180" viewBox="0 0 120 120" className="transform -rotate-90">
+                  <defs>
+                    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                      <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.3" floodColor="#000" />
+                    </filter>
+                  </defs>
+                  
+                  {filteredShipments.length === 0 && (
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="45"
+                      fill="transparent"
+                      stroke={isDark ? '#334155' : '#e2e8f0'}
+                      strokeWidth="10"
+                    />
+                  )}
+
+                  {filteredShipments.length > 0 && segments.map((segment, index) => {
+                    const isHovered = hoveredIndex === index;
+                    return (
+                      <circle
+                        key={segment.name}
+                        cx="60"
+                        cy="60"
+                        r="45"
+                        fill="transparent"
+                        stroke={COLORS[segment.name]}
+                        strokeWidth={isHovered ? 14 : 10}
+                        strokeDasharray={circumference}
+                        strokeDashoffset={segment.strokeDashoffset}
+                        transform={`rotate(${segment.rotation} 60 60)`}
+                        strokeLinecap="round"
+                        className="transition-all duration-300 cursor-pointer origin-center"
+                        style={{
+                          filter: isHovered ? 'url(#glow)' : 'none',
+                          opacity: hoveredIndex !== null && !isHovered ? 0.6 : 1
+                        }}
+                        onMouseEnter={() => setHoveredIndex(index)}
+                        onMouseLeave={() => setHoveredIndex(null)}
+                      />
+                    );
+                  })}
+                </svg>
+
+                {/* Donut Center Label */}
+                <div className="absolute flex flex-col items-center justify-center text-center pointer-events-none">
+                  {hoveredIndex !== null ? (
+                    <>
+                      <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: COLORS[segments[hoveredIndex].name] }}>
+                        {segments[hoveredIndex].name}
+                      </span>
+                      <span className={`text-2xl font-extrabold transition-all duration-200 ${isDark ? 'text-white' : 'text-slate-800'}`}>
+                        {segments[hoveredIndex].count}
+                      </span>
+                      <span className={`text-[10px] font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {segments[hoveredIndex].percentage}%
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                        Total
+                      </span>
+                      <span className={`text-3xl font-extrabold ${isDark ? 'text-white' : 'text-slate-800'}`}>
+                        {filteredShipments.length}
+                      </span>
+                      <span className={`text-[10px] font-semibold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                        Shipments
+                      </span>
+                    </>
+                  )}
                 </div>
-              ))}
+              </div>
+
+              {/* Right Column: Legend Grid */}
+              <div className="space-y-3">
+                {segments.map((status, index) => {
+                  const isHovered = hoveredIndex === index;
+                  return (
+                    <div 
+                      key={status.name}
+                      onMouseEnter={() => setHoveredIndex(index)}
+                      onMouseLeave={() => setHoveredIndex(null)}
+                      className={`flex items-center justify-between p-3 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        isHovered 
+                          ? isDark 
+                            ? 'bg-slate-700/50 border-slate-500 scale-[1.02] shadow-lg shadow-black/20' 
+                            : 'bg-slate-50 border-slate-300 scale-[1.02] shadow-md'
+                          : isDark 
+                            ? 'bg-slate-900/20 border-slate-800/80 hover:border-slate-700' 
+                            : 'bg-white border-slate-100 hover:border-slate-200'
+                      }`}
+                      style={{ 
+                        borderLeftWidth: '5px',
+                        borderLeftColor: COLORS[status.name]
+                      }}
+                    >
+                      <div className="flex flex-col">
+                        <span className={`text-sm font-bold transition-colors ${
+                          isHovered 
+                            ? isDark ? 'text-white' : 'text-slate-800'
+                            : isDark ? 'text-slate-300' : 'text-slate-700'
+                        }`}>
+                          {status.name}
+                        </span>
+                        <span className={`text-[10px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                          {status.name === 'Pending' ? 'Approval / Ready' : status.name === 'In Transit' ? 'In Transit / Dispatched' : 'Delivered to Customer'}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className={`text-lg font-extrabold ${isDark ? 'text-white' : 'text-slate-800'}`}>
+                          {status.count}
+                        </span>
+                        <span className="text-xs block font-semibold" style={{ color: COLORS[status.name] }}>
+                          {status.percentage}%
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
