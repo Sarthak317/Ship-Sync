@@ -19,9 +19,18 @@ const NotificationBell = ({ userEmail, isAdmin = false }) => {
   const [notifications, setNotifications] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [activeToasts, setActiveToasts] = useState([]);
+  
   const dropdownRef = useRef(null);
+  const isSessionInitialized = useRef(false);
+  const notificationsRef = useRef([]);
 
-  // Close dropdown when clicking outside
+  // Sync state notifications to a ref to avoid stale closure issues in Firestore snapshot
+  useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
+
+  // Close drawer when clicking outside (on the main dashboard body)
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -31,6 +40,23 @@ const NotificationBell = ({ userEmail, isAdmin = false }) => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Trigger custom toast alert helper
+  const triggerToast = (notif) => {
+    const id = Date.now() + Math.random();
+    const newToast = {
+      id,
+      message: notif.message,
+      type: notif.type,
+      status: notif.status
+    };
+    setActiveToasts(prev => [...prev, newToast]);
+    
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+      setActiveToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+  };
 
   // Listen to notifications in real-time
   useEffect(() => {
@@ -60,6 +86,19 @@ const NotificationBell = ({ userEmail, isAdmin = false }) => {
       snapshot.forEach((doc) => {
         notifs.push({ id: doc.id, ...doc.data() });
       });
+
+      // Trigger animated toast notifications for new unread notifications received in-session
+      if (isSessionInitialized.current) {
+        const added = notifs.filter(n => 
+          !n.read && !notificationsRef.current.some(prev => prev.id === n.id)
+        );
+        added.forEach(n => {
+          triggerToast(n);
+        });
+      } else {
+        isSessionInitialized.current = true;
+      }
+
       setNotifications(notifs);
       setUnreadCount(notifs.filter(n => !n.read).length);
     }, (error) => {
@@ -161,103 +200,163 @@ const NotificationBell = ({ userEmail, isAdmin = false }) => {
         )}
       </button>
 
-      {/* Dropdown */}
+      {/* Sliding Drawer Backdrop overlay */}
       {isOpen && (
+        <div 
+          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40"
+          onClick={() => setIsOpen(false)}
+        />
+      )}
+
+      {/* Sliding Drawer Panel */}
+      <div
+        className={`fixed right-0 top-0 h-screen w-96 z-50 shadow-2xl border-l backdrop-blur-md transition-transform duration-300 ease-in-out transform flex flex-col ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        } ${
+          isDark
+            ? 'bg-slate-900/95 border-slate-800'
+            : 'bg-white/95 border-slate-200'
+        }`}
+      >
+        {/* Header */}
         <div
-          className={`absolute right-0 mt-2 w-80 rounded-xl shadow-2xl border z-50 overflow-hidden ${
-            isDark
-              ? 'bg-slate-800 border-slate-700'
-              : 'bg-white border-slate-200'
+          className={`px-6 py-5 border-b flex items-center justify-between ${
+            isDark ? 'border-slate-800' : 'border-slate-200'
           }`}
         >
-          {/* Header */}
-          <div
-            className={`px-4 py-3 border-b flex items-center justify-between ${
-              isDark ? 'border-slate-700 bg-slate-800/80' : 'border-slate-200 bg-slate-50'
-            }`}
-          >
-            <h3 className={`font-semibold text-sm ${isDark ? 'text-white' : 'text-slate-800'}`}>
+          <div className="flex items-center gap-2">
+            <h3 className={`font-bold text-lg ${isDark ? 'text-white' : 'text-slate-800'}`}>
               Notifications
             </h3>
-            <div className="flex items-center gap-2">
-              {unreadCount > 0 && (
-                <button
-                  onClick={markAllAsRead}
-                  className="text-[10px] text-emerald-500 hover:text-emerald-400 font-medium"
-                >
-                  Mark all read
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Notifications List */}
-          <div className="max-h-80 overflow-y-auto">
-            {notifications.length === 0 ? (
-              <div className="px-4 py-8 text-center">
-                <Bell className={`w-10 h-10 mx-auto mb-2 ${isDark ? 'text-slate-600' : 'text-slate-300'}`} />
-                <p className={`text-sm ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                  No notifications yet
-                </p>
-              </div>
-            ) : (
-              notifications.map((notif) => (
-                <div
-                  key={notif.id}
-                  onClick={() => !notif.read && markAsRead(notif.id)}
-                  className={`px-4 py-3 border-b cursor-pointer transition-colors duration-200 ${
-                    isDark
-                      ? `border-slate-700/50 ${notif.read ? 'bg-slate-800/50' : 'bg-slate-700/30'} hover:bg-slate-700/50`
-                      : `border-slate-100 ${notif.read ? 'bg-white' : 'bg-blue-50/50'} hover:bg-slate-50`
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className={`p-2 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>
-                      {getNotificationIcon(notif.type, notif.status)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-xs font-medium ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
-                        {notif.message}
-                      </p>
-                      <p className={`text-[10px] mt-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                        {formatTimeAgo(notif.createdAt)}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {!notif.read && (
-                        <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                      )}
-                      <button
-                        onClick={(e) => deleteNotification(notif.id, e)}
-                        className={`p-1 rounded hover:bg-red-500/20 ${isDark ? 'text-slate-500 hover:text-red-400' : 'text-slate-400 hover:text-red-500'}`}
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
+            {unreadCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500 text-xs font-bold">
+                {unreadCount} new
+              </span>
             )}
           </div>
-
-          {/* Footer */}
-          {notifications.length > 0 && (
-            <div
-              className={`px-4 py-2 border-t ${
-                isDark ? 'border-slate-700 bg-slate-800/80' : 'border-slate-200 bg-slate-50'
+          <div className="flex items-center gap-3">
+            {unreadCount > 0 && (
+              <button
+                onClick={markAllAsRead}
+                className="text-xs text-emerald-500 hover:text-emerald-400 font-semibold"
+              >
+                Mark all read
+              </button>
+            )}
+            <button
+              onClick={() => setIsOpen(false)}
+              className={`p-1.5 rounded-lg border transition-colors ${
+                isDark 
+                  ? 'border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white' 
+                  : 'border-slate-200 hover:bg-slate-100 text-slate-500 hover:text-slate-800'
               }`}
             >
-              <button
-                onClick={clearAllNotifications}
-                className="w-full text-[11px] text-red-500 hover:text-red-400 font-medium flex items-center justify-center gap-1 py-1"
-              >
-                <Trash2 className="w-3 h-3" />
-                Clear all notifications
-              </button>
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Notifications List */}
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/50">
+          {notifications.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+              <div className={`p-4 rounded-full mb-4 ${isDark ? 'bg-slate-800/50' : 'bg-slate-50'}`}>
+                <Bell className={`w-8 h-8 ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
+              </div>
+              <p className={`font-bold text-sm ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                All caught up!
+              </p>
+              <p className={`text-xs mt-1 max-w-[200px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                You'll receive alerts here when shipment statuses update.
+              </p>
             </div>
+          ) : (
+            notifications.map((notif) => (
+              <div
+                key={notif.id}
+                onClick={() => !notif.read && markAsRead(notif.id)}
+                className={`p-5 cursor-pointer transition-all duration-200 flex gap-4 ${
+                  isDark
+                    ? `${notif.read ? 'bg-slate-900/10' : 'bg-slate-800/30'} hover:bg-slate-800/50`
+                    : `${notif.read ? 'bg-white' : 'bg-blue-50/20'} hover:bg-slate-50`
+                }`}
+              >
+                <div className={`p-2 h-9 w-9 rounded-xl flex items-center justify-center shadow-md ${isDark ? 'bg-slate-800 border border-slate-700/50' : 'bg-slate-100 border border-slate-200'}`}>
+                  {getNotificationIcon(notif.type, notif.status)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-start gap-2">
+                    <p className={`text-xs font-semibold leading-relaxed ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+                      {notif.message}
+                    </p>
+                    {!notif.read && (
+                      <span className="w-2 h-2 mt-1.5 bg-blue-500 rounded-full shrink-0 animate-pulse"></span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-2.5">
+                    <p className={`text-[10px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                      {formatTimeAgo(notif.createdAt)}
+                    </p>
+                    <button
+                      onClick={(e) => deleteNotification(notif.id, e)}
+                      className={`p-1 rounded-md opacity-100 transition-opacity ${
+                        isDark ? 'text-slate-500 hover:text-red-400 hover:bg-slate-800' : 'text-slate-400 hover:text-red-500 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
           )}
         </div>
-      )}
+
+        {/* Footer */}
+        {notifications.length > 0 && (
+          <div
+            className={`p-4 border-t ${
+              isDark ? 'border-slate-800 bg-slate-900/50' : 'border-slate-200 bg-slate-50'
+            }`}
+          >
+            <button
+              onClick={clearAllNotifications}
+              className="w-full text-xs text-red-500 hover:text-red-400 font-semibold flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-red-500/20 hover:bg-red-500/5 transition-all duration-200"
+            >
+              <Trash2 className="w-4 h-4" />
+              Clear all notifications
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Toast Feed Container (Bottom-Right overlay) */}
+      <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 max-w-sm w-full pointer-events-none">
+        {activeToasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto flex items-start gap-3 p-4 rounded-xl shadow-2xl border backdrop-blur-md animate-slide-in-right transition-all duration-300 ${
+              isDark 
+                ? 'bg-slate-950/90 border-slate-800/80 text-white shadow-black/60' 
+                : 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-200/50'
+            }`}
+          >
+            <div className={`p-2 rounded-lg ${isDark ? 'bg-slate-900' : 'bg-slate-100'}`}>
+              {getNotificationIcon(toast.type, toast.status)}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold">New Update</p>
+              <p className="text-xs mt-0.5 opacity-90 leading-relaxed">{toast.message}</p>
+            </div>
+            <button
+              onClick={() => setActiveToasts(prev => prev.filter(t => t.id !== toast.id))}
+              className={`p-1 rounded hover:bg-red-500/10 text-slate-400 hover:text-red-500`}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
